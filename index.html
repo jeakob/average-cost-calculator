@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Basis — Average Cost Calculator</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="description" content="A simple, private cost-basis calculator for US and UK stocks. No accounts, no tracking — runs entirely in your browser." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg-grad-1: #f8fafc;
+    --bg-grad-2: #eef2f7;
+    --ink: #0f172a;
+    --ink-2: #475569;
+    --mute: #64748b;
+    --mute-2: #94a3b8;
+    --line: rgba(15,23,42,.06);
+    --line-2: rgba(15,23,42,.1);
+    --card: #ffffff;
+    --green: #16a34a;
+    --red: #dc2626;
+    --blue: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: linear-gradient(180deg, var(--bg-grad-1), var(--bg-grad-2));
+    background-attachment: fixed;
+    font-family: "Inter","Helvetica Neue",system-ui,sans-serif;
+    color: var(--ink);
+    min-height: 100vh;
+  }
+  #root { max-width: 1100px; margin: 0 auto; padding: 32px 24px 80px; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  @media (max-width: 760px) {
+    #root { padding: 20px 14px 64px; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+const STORAGE_KEY = 'basis-app-v1';
+
+// ─── Calc engine ──────────────────────────────────────────────────────────
+function computeStats(rows) {
+  let buyShares = 0, buyCost = 0, sellShares = 0;
+  rows.forEach(r => {
+    const sh = +r.shares || 0, px = +r.price || 0, fee = +r.fee || 0;
+    if (r.type === 'sell') sellShares += sh;
+    else { buyShares += sh; buyCost += sh * px + fee; }
+  });
+  const openShares = Math.max(0, buyShares - sellShares);
+  const avgCost = buyShares > 0 ? buyCost / buyShares : 0;
+  return { buyShares, sellShares, openShares, avgCost, openCost: openShares * avgCost, totalInvested: buyCost };
+}
+
+const fmt = (n, ccy) => {
+  if (!isFinite(n)) return '—';
+  const sym = ccy === 'GBP' ? '£' : ccy === 'GBX' ? '' : '$';
+  const suffix = ccy === 'GBX' ? 'p' : '';
+  const sign = n < 0 ? '-' : '';
+  return sign + sym + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: ccy === 'GBX' ? 4 : 4 }) + suffix;
+};
+const fmtSh = n => (+n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 6 });
+const fmtPct = n => (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+
+const CCYS = [
+  { code: 'USD', sym: '$', label: 'US Dollar' },
+  { code: 'GBP', sym: '£', label: 'British Pound' },
+  { code: 'GBX', sym: 'p', label: 'Pence (LSE)' },
+];
+
+// ─── Sample / default ─────────────────────────────────────────────────────
+const SAMPLE = [
+  { id: 'r1', shares: 10, price: 142.50, fee: 0, date: '2024-03-12', note: '' },
+  { id: 'r2', shares: 8,  price: 168.20, fee: 0, date: '2024-08-04', note: '' },
+  { id: 'r3', shares: 12, price: 121.00, fee: 0, date: '2025-01-22', note: '' },
+];
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+function saveState(s) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────
+function App() {
+  const initial = loadState();
+  const [rows, setRows] = useState(initial?.rows ?? SAMPLE);
+  const [symbol, setSymbol] = useState(initial?.symbol ?? 'AAPL');
+  const [ccy, setCcy] = useState(initial?.ccy ?? 'USD');
+  const [whatIf, setWhatIf] = useState(initial?.whatIf ?? { shares: 10, price: 165 });
+  const [showHelp, setShowHelp] = useState(false);
+
+  useEffect(() => { saveState({ rows, symbol, ccy, whatIf }); }, [rows, symbol, ccy, whatIf]);
+
+  const stats = useMemo(() => computeStats(rows.filter(r => r.type !== 'sell' || true)), [rows]);
+  // Treat all rows as buys for the headline avg (you asked for avg before new buys).
+  const buyRows = rows; // every row is a buy in the simplified UI
+
+  // What-if: average if we add hypothetical buy
+  const whatIfAvg = useMemo(() => {
+    const next = [...buyRows, { id: '_w', shares: +whatIf.shares, price: +whatIf.price, fee: 0 }];
+    return computeStats(next).avgCost;
+  }, [buyRows, whatIf]);
+
+  function updateRow(id, patch) {
+    setRows(rows.map(r => r.id === id ? { ...r, ...patch } : r));
+  }
+  function addRow() {
+    setRows([...rows, { id: 'r' + Date.now(), shares: 0, price: 0, fee: 0, date: new Date().toISOString().slice(0, 10), note: '' }]);
+  }
+  function removeRow(id) { setRows(rows.filter(r => r.id !== id)); }
+  function clearAll() {
+    if (confirm('Clear all buys? This cannot be undone.')) setRows([{ id: 'r' + Date.now(), shares: 0, price: 0, fee: 0, date: new Date().toISOString().slice(0, 10), note: '' }]);
+  }
+  function loadSample() {
+    if (rows.length > 1 && !confirm('Replace current buys with sample data?')) return;
+    setRows(SAMPLE.map(r => ({ ...r, id: 'r' + Math.random().toString(36).slice(2) })));
+  }
+
+  const ccySym = CCYS.find(c => c.code === ccy)?.sym ?? '$';
+  const showCcy = (n) => fmt(n, ccy);
+
+  const deltaWhatIf = stats.avgCost > 0 ? ((whatIfAvg - stats.avgCost) / stats.avgCost) * 100 : 0;
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, letterSpacing: 2.5, color: 'var(--mute)', fontWeight: 700 }}>BASIS</div>
+          <h1 style={{ fontSize: 30, margin: '6px 0 4px', fontWeight: 800, letterSpacing: -0.6 }}>
+            Average cost calculator
+          </h1>
+          <div style={{ fontSize: 14, color: 'var(--mute)' }}>
+            Work out your average price per share before placing your next buy. Private — runs entirely in your browser.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {CCYS.map(c => (
+            <button
+              key={c.code}
+              onClick={() => setCcy(c.code)}
+              style={{
+                padding: '6px 12px', borderRadius: 999, fontSize: 11, fontWeight: 700,
+                letterSpacing: 0.5,
+                background: ccy === c.code ? 'var(--ink)' : 'transparent',
+                color: ccy === c.code ? '#fff' : 'var(--ink)',
+                border: '1px solid var(--ink)', cursor: 'pointer',
+                transition: 'all .15s',
+              }}
+              title={c.label}
+            >
+              {c.sym} {c.code}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Symbol + headline */}
+      <Card style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
+          <div style={{ flex: '0 0 auto' }}>
+            <Label>Symbol / Ticker</Label>
+            <input
+              value={symbol}
+              onChange={e => setSymbol(e.target.value.toUpperCase())}
+              placeholder="AAPL"
+              style={{ ...bareInput, fontSize: 24, fontWeight: 800, width: 130, letterSpacing: -0.3, marginTop: 2 }}
+            />
+          </div>
+          <div style={{ width: 1, height: 44, background: 'var(--line)' }} />
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <Label>Total invested</Label>
+            <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums', marginTop: 2, letterSpacing: -0.3 }}>
+              {showCcy(stats.totalInvested)}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--mute-2)', marginTop: 1 }}>across {rows.length} buy{rows.length !== 1 ? 's' : ''}</div>
+          </div>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <Label>Total shares</Label>
+            <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums', marginTop: 2, letterSpacing: -0.3 }}>
+              {fmtSh(stats.buyShares)}
+            </div>
+          </div>
+          <div style={{
+            flex: '0 0 auto', padding: '14px 22px', borderRadius: 12,
+            background: 'linear-gradient(135deg, #0f172a, #1e293b)', color: '#fff', minWidth: 220,
+          }}>
+            <div style={{ fontSize: 10, letterSpacing: 2, color: '#94a3b8', fontWeight: 700 }}>YOUR AVERAGE PRICE</div>
+            <div style={{ fontSize: 32, fontWeight: 800, fontVariantNumeric: 'tabular-nums', letterSpacing: -0.8, marginTop: 2 }}>
+              {showCcy(stats.avgCost)}
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>per share, all-in (incl. fees)</div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Buys table */}
+      <Card style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Your buys</div>
+            <div style={{ fontSize: 12, color: 'var(--mute)', marginTop: 2 }}>Add every purchase. Fees are folded into your cost basis.</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={loadSample} style={ghostBtn}>Load sample</button>
+            <button onClick={clearAll} style={ghostBtn}>Clear all</button>
+            <button onClick={addRow} style={primaryBtn}>+ Add buy</button>
+          </div>
+        </div>
+
+        {/* desktop header */}
+        <div className="row-head" style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr 1fr 1.1fr 1.4fr 30px', gap: 10, fontSize: 10, color: 'var(--mute)', fontWeight: 700, letterSpacing: 0.7, paddingBottom: 8, borderBottom: '1px solid var(--line)' }}>
+          <div>DATE</div>
+          <div>SHARES</div>
+          <div>PRICE ({ccySym})</div>
+          <div>FEE ({ccySym})</div>
+          <div>NOTE</div>
+          <div style={{ textAlign: 'right' }}>TOTAL COST</div>
+          <div></div>
+        </div>
+
+        {rows.map(r => {
+          const total = (+r.shares || 0) * (+r.price || 0) + (+r.fee || 0);
+          return (
+            <div key={r.id} style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr 1fr 1.1fr 1.4fr 30px', gap: 10, padding: '12px 0', borderBottom: '1px solid var(--line)', alignItems: 'center' }}>
+              <input type="date" value={r.date || ''} onChange={e => updateRow(r.id, { date: e.target.value })} style={{ ...bareInput, fontSize: 13, color: 'var(--ink-2)' }} />
+              <input type="number" min="0" step="any" placeholder="0" value={r.shares} onChange={e => updateRow(r.id, { shares: e.target.value })} style={{ ...bareInput, fontVariantNumeric: 'tabular-nums', fontWeight: 500 }} />
+              <input type="number" min="0" step="any" placeholder="0.00" value={r.price} onChange={e => updateRow(r.id, { price: e.target.value })} style={{ ...bareInput, fontVariantNumeric: 'tabular-nums', fontWeight: 500 }} />
+              <input type="number" min="0" step="any" placeholder="0" value={r.fee} onChange={e => updateRow(r.id, { fee: e.target.value })} style={{ ...bareInput, fontVariantNumeric: 'tabular-nums', color: 'var(--mute)' }} />
+              <input type="text" placeholder="optional" value={r.note || ''} onChange={e => updateRow(r.id, { note: e.target.value })} style={{ ...bareInput, fontSize: 13, color: 'var(--mute)' }} />
+              <div style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, textAlign: 'right' }}>{showCcy(total)}</div>
+              <button onClick={() => removeRow(r.id)} aria-label="Remove" style={{ background: 'transparent', border: 'none', color: 'var(--mute-2)', cursor: 'pointer', fontSize: 18, padding: 4 }}>×</button>
+            </div>
+          );
+        })}
+
+        {rows.length === 0 && (
+          <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--mute)', fontSize: 13 }}>
+            No buys yet. <button onClick={addRow} style={{ ...ghostBtn, marginLeft: 6 }}>Add your first</button>
+          </div>
+        )}
+      </Card>
+
+      {/* What-if next buy */}
+      <Card style={{ padding: 20 }}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>Plan your next buy</div>
+        <div style={{ fontSize: 12, color: 'var(--mute)', marginTop: 2, marginBottom: 16 }}>
+          See how the average shifts before you actually place the order.
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, alignItems: 'flex-end' }}>
+          <Field label="Hypothetical shares">
+            <input type="number" min="0" step="any" value={whatIf.shares} onChange={e => setWhatIf({ ...whatIf, shares: +e.target.value })} style={{ ...bareInput, fontSize: 22, fontWeight: 700 }} />
+          </Field>
+          <Field label={`Price per share (${ccySym})`}>
+            <input type="number" min="0" step="any" value={whatIf.price} onChange={e => setWhatIf({ ...whatIf, price: +e.target.value })} style={{ ...bareInput, fontSize: 22, fontWeight: 700 }} />
+          </Field>
+          <Field label="Cost of next buy">
+            <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+              {showCcy((+whatIf.shares || 0) * (+whatIf.price || 0))}
+            </div>
+          </Field>
+        </div>
+
+        <div style={{
+          marginTop: 18, padding: 18, borderRadius: 12,
+          background: '#f1f5f9', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14,
+        }}>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--mute)', fontWeight: 700, letterSpacing: 1.2 }}>CURRENT AVG</div>
+            <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>{showCcy(stats.avgCost)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--mute)', fontWeight: 700, letterSpacing: 1.2 }}>NEW AVG AFTER BUY</div>
+            <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums', marginTop: 2, color: 'var(--ink)' }}>{showCcy(whatIfAvg)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--mute)', fontWeight: 700, letterSpacing: 1.2 }}>CHANGE</div>
+            <div style={{
+              fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums', marginTop: 2,
+              color: stats.avgCost === 0 ? 'var(--ink)' : (whatIfAvg < stats.avgCost ? 'var(--green)' : whatIfAvg > stats.avgCost ? 'var(--red)' : 'var(--ink)'),
+            }}>
+              {stats.avgCost === 0 ? '—' : fmtPct(deltaWhatIf)}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--mute)', fontWeight: 700, letterSpacing: 1.2 }}>NEW TOTAL SHARES</div>
+            <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>
+              {fmtSh(stats.buyShares + (+whatIf.shares || 0))}
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Footer */}
+      <div style={{ marginTop: 28, fontSize: 12, color: 'var(--mute)', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <span>Saved locally in this browser. Nothing is sent over the network.</span>
+        <span>
+          <button onClick={() => setShowHelp(true)} style={{ ...ghostBtn, padding: '4px 10px', fontSize: 12 }}>How is this calculated?</button>
+        </span>
+      </div>
+
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+    </div>
+  );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+function Card({ children, style }) {
+  return (
+    <div style={{
+      background: 'var(--card)', borderRadius: 16,
+      boxShadow: '0 1px 2px rgba(15,23,42,.04), 0 8px 24px -12px rgba(15,23,42,.08)',
+      border: '1px solid var(--line)', ...style,
+    }}>{children}</div>
+  );
+}
+function Label({ children }) {
+  return <div style={{ fontSize: 10, letterSpacing: 1.2, color: 'var(--mute)', fontWeight: 700 }}>{children?.toUpperCase ? children.toUpperCase() : children}</div>;
+}
+function Field({ label, children }) {
+  return (
+    <div style={{ paddingBottom: 8, borderBottom: '1px solid var(--line-2)' }}>
+      <Label>{label}</Label>
+      <div style={{ marginTop: 4 }}>{children}</div>
+    </div>
+  );
+}
+
+const bareInput = {
+  border: 'none', outline: 'none', background: 'transparent',
+  fontFamily: 'inherit', fontSize: 14, color: 'var(--ink)', width: '100%', padding: 0,
+};
+const ghostBtn = {
+  background: 'transparent', border: '1px solid var(--line-2)', color: 'var(--ink)',
+  borderRadius: 8, padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+};
+const primaryBtn = {
+  background: 'var(--ink)', color: '#fff', border: 'none',
+  borderRadius: 8, padding: '7px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+};
+
+function HelpModal({ onClose }) {
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(15,23,42,.4)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 100,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: '#fff', borderRadius: 16, padding: 28, maxWidth: 520, width: '100%',
+        boxShadow: '0 20px 60px rgba(15,23,42,.25)', maxHeight: '85vh', overflow: 'auto',
+      }}>
+        <h2 style={{ margin: '0 0 8px', fontSize: 22, fontWeight: 800, letterSpacing: -0.3 }}>How it works</h2>
+        <p style={{ fontSize: 14, color: 'var(--ink-2)', lineHeight: 1.55, marginTop: 0 }}>
+          Your average price is a <strong>weighted average</strong> across every buy, with fees rolled into the cost basis.
+        </p>
+        <div style={{ background: '#f1f5f9', padding: 14, borderRadius: 10, fontSize: 13, fontFamily: 'ui-monospace,monospace', lineHeight: 1.7 }}>
+          avg = (Σ shares×price + Σ fees) ÷ Σ shares
+        </div>
+        <h3 style={{ fontSize: 14, fontWeight: 700, marginTop: 20, marginBottom: 6 }}>Example</h3>
+        <p style={{ fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55, margin: 0 }}>
+          Buy 10 @ $142.50 + 8 @ $168.20 + 12 @ $121.00 → cost basis $4,213.10 over 30 shares = <strong>$140.44 per share</strong>.
+          Add a hypothetical buy of 10 @ $165 in the planner and the average shifts to <strong>$146.58</strong>.
+        </p>
+        <h3 style={{ fontSize: 14, fontWeight: 700, marginTop: 20, marginBottom: 6 }}>Currencies</h3>
+        <p style={{ fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55, margin: 0 }}>
+          Switch the display symbol between $ USD, £ GBP, and pence (LSE quotes UK shares in pence). The math is currency-agnostic — enter all your buys in the same currency you'll plan in.
+        </p>
+        <h3 style={{ fontSize: 14, fontWeight: 700, marginTop: 20, marginBottom: 6 }}>Privacy</h3>
+        <p style={{ fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55, margin: 0 }}>
+          Your data is saved in <code>localStorage</code>. It never leaves your browser. No analytics, no cookies, no API calls.
+        </p>
+        <div style={{ marginTop: 22, textAlign: 'right' }}>
+          <button onClick={onClose} style={primaryBtn}>Got it</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
