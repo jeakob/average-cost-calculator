@@ -9,6 +9,8 @@ A simple, private cost-basis calculator for stocks. Works for **US** (NYSE/Nasda
 - 100% client-side — your data is saved in `localStorage` and never leaves your browser
 - No accounts, no analytics, no cookies, no API calls
 
+URL: https://jeakob.github.io/average-cost-calculator/
+
 ## Run locally
 
 It's just one HTML file. Open `index.html` in any modern browser, or serve the folder:
