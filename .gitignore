@@ -1,0 +1,4 @@
+# Don't track local state files
+.DS_Store
+node_modules/
+.design-canvas.state.json
